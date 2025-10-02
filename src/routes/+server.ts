@@ -1,7 +1,5 @@
 // File: src/routes/proxy/+server.ts
 import type { RequestHandler } from '@sveltejs/kit';
-import dns from 'dns/promises';
-import fs from 'fs/promises';
 
 // Blocked network CIDRs: loopback, link-local, private, CGNAT, local IPv6
 const blockedCIDRs = [
@@ -41,12 +39,13 @@ async function isBlockedHost(host: string) {
 		return blockedCIDRs.some((cidr) => ipInCidr(hostname, cidr));
 	}
 	try {
-		const ips = await dns.lookup(hostname, { all: true });
-		return ips.some((ipObj) => blockedCIDRs.some((cidr) => ipInCidr(ipObj.address, cidr)));
+		const ips = await Bun.resolve(hostname); // Bun-native DNS resolution
+		return ips.some((ip) => blockedCIDRs.some((cidr) => ipInCidr(ip, cidr)));
 	} catch {
-		return true;
+		return true; // block on DNS failure
 	}
 }
+
 async function executeProxyRequest(request: Request, targetUrl: URL) {
 	if (await isBlockedHost(targetUrl.host)) {
 		return new Response(JSON.stringify({ error: 'Forbidden: private network access' }), {
@@ -80,7 +79,7 @@ async function executeProxyRequest(request: Request, targetUrl: URL) {
 		'access-control-expose-headers'
 	].forEach((h) => responseHeaders.delete(h));
 
-	responseHeaders.set('Access-Control-Allow-Origin', '*');
+	responseHeaders.set('Access-Control-Allow-Origin', request.headers.get('origin') || '*');
 	responseHeaders.set('Access-Control-Allow-Credentials', 'true');
 	responseHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
 	responseHeaders.set('Access-Control-Allow-Headers', '*');
@@ -91,7 +90,8 @@ async function executeProxyRequest(request: Request, targetUrl: URL) {
 	return new Response(body, { status: resp.status, headers: responseHeaders });
 }
 
-const thing = async ({ request, url }) => {
+const handleRequest: RequestHandler = async ({ request, url }) => {
+	// Preflight CORS
 	if (request.method === 'OPTIONS') {
 		const headers = new Headers();
 		headers.set('Access-Control-Allow-Origin', '*');
@@ -102,11 +102,13 @@ const thing = async ({ request, url }) => {
 		return new Response(null, { status: 204, headers });
 	}
 
+	// Health check
 	if (url.pathname === '/ping') return new Response('pong');
 
+	// Serve OpenAPI document
 	if (url.pathname === '/openapi.yaml') {
 		try {
-			const content = await fs.readFile('public/openapi.yaml', 'utf-8');
+			const content = await Bun.file('public/openapi.yaml').text(); // Bun-native file reading
 			return new Response(content, { headers: { 'Content-Type': 'text/yaml' } });
 		} catch {
 			return new Response('Error reading openapi.yaml', { status: 500 });
@@ -126,10 +128,10 @@ const thing = async ({ request, url }) => {
 	return executeProxyRequest(request, targetUrl);
 };
 
-export const GET: RequestHandler = thing;
-export const POST: RequestHandler = thing;
-export const PATCH: RequestHandler = thing;
-export const PUT: RequestHandler = thing;
-export const DELETE: RequestHandler = thing;
-export const OPTIONS: RequestHandler = thing;
-export const HEAD: RequestHandler = thing;
+export const GET = handleRequest;
+export const POST = handleRequest;
+export const PATCH = handleRequest;
+export const PUT = handleRequest;
+export const DELETE = handleRequest;
+export const OPTIONS = handleRequest;
+export const HEAD = handleRequest;
