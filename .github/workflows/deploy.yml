@@ -1,0 +1,33 @@
+name: Deploy to Bakery
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      SSH_PRIVATE_KEY: ${{ secrets.BAKERY_SSH_KEY }}
+      SSH_USER: root
+      SSH_HOST: jevido.nl
+      APP_DOMAIN: scalar-proxy.jevido.nl
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Setup SSH
+        run: |
+          echo "$SSH_PRIVATE_KEY" > key.pem
+          chmod 600 key.pem
+          mkdir -p ~/.ssh
+          ssh-keyscan -H $SSH_HOST >> ~/.ssh/known_hosts
+
+      - name: Upload build to server
+        run: |
+          rsync -az --mkpath --delete -e "ssh -i key.pem" ./ $SSH_USER@$SSH_HOST:/srv/bakery/apps/$APP_DOMAIN/current
+
+      - name: Deploy on server
+        run: |
+          ssh -i key.pem $SSH_USER@$SSH_HOST "bakery deploy $APP_DOMAIN"
